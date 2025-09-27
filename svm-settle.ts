@@ -4,7 +4,7 @@ import {
   PaymentRequirements,
   ExactSvmPayload,
   ErrorReasons,
-} from "../../../../types/verify";
+} from "./src/types/payment";
 import {
   assertIsTransactionMessageWithBlockhashLifetime,
   Commitment,
@@ -26,13 +26,13 @@ import {
   decodeTransactionFromPayload,
   getRpcClient,
   getRpcSubscriptions,
-} from "../../../../shared/svm";
+} from "./src/shared/svm-utils";
 import {
   createBlockHeightExceedencePromiseFactory,
   waitForRecentTransactionConfirmation,
   createRecentSignatureConfirmationPromiseFactory,
 } from "@solana/transaction-confirmation";
-import { verify } from "./verify";
+import { verify } from "./svm-verify";
 
 /**
  * Settle the payment payload against the payment requirements.
@@ -46,7 +46,7 @@ import { verify } from "./verify";
 export async function settle(
   signer: KeyPairSigner,
   payload: PaymentPayload,
-  paymentRequirements: PaymentRequirements,
+  paymentRequirements: PaymentRequirements
 ): Promise<SettleResponse> {
   const verifyResponse = await verify(signer, payload, paymentRequirements);
   if (!verifyResponse.isValid) {
@@ -60,18 +60,22 @@ export async function settle(
 
   const svmPayload = payload.payload as ExactSvmPayload;
   const decodedTransaction = decodeTransactionFromPayload(svmPayload);
-  const signedTransaction = await signTransaction([signer.keyPair], decodedTransaction);
+  const signedTransaction = await signTransaction(
+    [signer.keyPair],
+    decodedTransaction as any
+  );
   const payer = signer.address.toString();
 
   const rpc = getRpcClient(payload.network);
   const rpcSubscriptions = getRpcSubscriptions(payload.network);
 
   try {
-    const { success, errorReason, signature } = await sendAndConfirmSignedTransaction(
-      signedTransaction,
-      rpc,
-      rpcSubscriptions,
-    );
+    const { success, errorReason, signature } =
+      await sendAndConfirmSignedTransaction(
+        signedTransaction,
+        rpc as any,
+        rpcSubscriptions as any
+      );
 
     return {
       success,
@@ -106,10 +110,13 @@ export async function sendSignedTransaction(
   sendTxConfig: Parameters<SendTransactionApi["sendTransaction"]>[1] = {
     skipPreflight: true,
     encoding: "base64",
-  },
+  }
 ): Promise<string> {
-  const base64EncodedTransaction = getBase64EncodedWireTransaction(signedTransaction);
-  return await rpc.sendTransaction(base64EncodedTransaction, sendTxConfig).send();
+  const base64EncodedTransaction =
+    getBase64EncodedWireTransaction(signedTransaction);
+  return await rpc
+    .sendTransaction(base64EncodedTransaction, sendTxConfig)
+    .send();
 }
 
 /**
@@ -125,27 +132,37 @@ export async function sendSignedTransaction(
 export async function confirmSignedTransaction(
   signedTransaction: Awaited<ReturnType<typeof signTransaction>>,
   rpc: RpcDevnet<SolanaRpcApiDevnet> | RpcMainnet<SolanaRpcApiMainnet>,
-  rpcSubscriptions: ReturnType<typeof getRpcSubscriptions>,
-): Promise<{ success: boolean; errorReason?: (typeof ErrorReasons)[number]; signature: string }> {
+  rpcSubscriptions: ReturnType<typeof getRpcSubscriptions>
+): Promise<{
+  success: boolean;
+  errorReason?: (typeof ErrorReasons)[number];
+  signature: string;
+}> {
   // get the signature from the signed transaction
   const signature = getSignatureFromTransaction(signedTransaction);
 
   // set a timeout for the transaction confirmation
   const abortController = new AbortController();
   const timeout = setTimeout(() => {
-    abortController.abort("Transaction confirmation timed out after 60 seconds");
+    abortController.abort(
+      "Transaction confirmation timed out after 60 seconds"
+    );
   }, 60000);
 
   try {
     // decompile the transaction message to get the blockhash lifetime
-    const compiledTransactionMessage = getCompiledTransactionMessageDecoder().decode(
-      signedTransaction.messageBytes,
+    const compiledTransactionMessage =
+      getCompiledTransactionMessageDecoder().decode(
+        signedTransaction.messageBytes
+      );
+    const decompiledTransactionMessage =
+      await decompileTransactionMessageFetchingLookupTables(
+        compiledTransactionMessage,
+        rpc
+      );
+    assertIsTransactionMessageWithBlockhashLifetime(
+      decompiledTransactionMessage
     );
-    const decompiledTransactionMessage = await decompileTransactionMessageFetchingLookupTables(
-      compiledTransactionMessage,
-      rpc,
-    );
-    assertIsTransactionMessageWithBlockhashLifetime(decompiledTransactionMessage);
 
     // add the blockhash lifetime to the signed transaction
     const signedTransactionWithBlockhashLifetime = {
@@ -156,15 +173,17 @@ export async function confirmSignedTransaction(
     // create the config for the transaction confirmation
     const commitment: Commitment = "confirmed";
 
-    const getRecentSignatureConfirmationPromise = createRecentSignatureConfirmationPromiseFactory({
-      rpc,
-      rpcSubscriptions,
-    } as Parameters<typeof createRecentSignatureConfirmationPromiseFactory>[0]);
+      const getRecentSignatureConfirmationPromise =
+        createRecentSignatureConfirmationPromiseFactory({
+          rpc,
+          rpcSubscriptions,
+        } as any);
 
-    const getBlockHeightExceedencePromise = createBlockHeightExceedencePromiseFactory({
-      rpc,
-      rpcSubscriptions,
-    } as Parameters<typeof createBlockHeightExceedencePromiseFactory>[0]);
+    const getBlockHeightExceedencePromise =
+      createBlockHeightExceedencePromiseFactory({
+        rpc,
+        rpcSubscriptions,
+      } as any);
 
     const config = {
       abortSignal: abortController.signal,
@@ -224,8 +243,16 @@ export async function confirmSignedTransaction(
 export async function sendAndConfirmSignedTransaction(
   signedTransaction: Awaited<ReturnType<typeof signTransaction>>,
   rpc: RpcDevnet<SolanaRpcApiDevnet> | RpcMainnet<SolanaRpcApiMainnet>,
-  rpcSubscriptions: ReturnType<typeof getRpcSubscriptions>,
-): Promise<{ success: boolean; errorReason?: (typeof ErrorReasons)[number]; signature: string }> {
+  rpcSubscriptions: ReturnType<typeof getRpcSubscriptions>
+): Promise<{
+  success: boolean;
+  errorReason?: (typeof ErrorReasons)[number];
+  signature: string;
+}> {
   await sendSignedTransaction(signedTransaction, rpc);
-  return await confirmSignedTransaction(signedTransaction, rpc, rpcSubscriptions);
+  return await confirmSignedTransaction(
+    signedTransaction,
+    rpc,
+    rpcSubscriptions
+  );
 }

@@ -1,21 +1,26 @@
-import { Account, Address, Chain, getAddress, Hex, parseErc6492Signature, Transport } from "viem";
-import { getNetworkId } from "../../../shared";
-import { getVersion, getERC20Balance } from "../../../shared/evm";
 import {
-  usdcABI as abi,
-  authorizationTypes,
-  config,
-  ConnectedClient,
-  SignerWallet,
-} from "../../../types/shared/evm";
+  Account,
+  Address,
+  Chain,
+  getAddress,
+  Hex,
+  parseErc6492Signature,
+  Transport,
+} from "viem";
+import { getNetworkId } from "./src/shared/network";
+import { getVersion, getERC20Balance } from "./src/shared/evm-utils";
+import { usdcABI as abi, authorizationTypes } from "./src/shared/usdc-abi";
+import { config } from "./src/shared/evm-config";
+import { ConnectedClient, SignerWallet } from "./src/types/evm";
 import {
   PaymentPayload,
   PaymentRequirements,
   SettleResponse,
   VerifyResponse,
   ExactEvmPayload,
-} from "../../../types/verify";
-import { SCHEME } from "../../exact";
+} from "./src/types/payment";
+
+const SCHEME = "exact";
 
 /**
  * Verifies a payment payload against the required payment details
@@ -40,7 +45,7 @@ export async function verify<
 >(
   client: ConnectedClient<transport, chain, account>,
   payload: PaymentPayload,
-  paymentRequirements: PaymentRequirements,
+  paymentRequirements: PaymentRequirements
 ): Promise<VerifyResponse> {
   /* TODO: work with security team on brainstorming more verification steps
   verification steps:
@@ -55,122 +60,103 @@ export async function verify<
     - 🔄 verify permit has not been used
   */
 
-  const exactEvmPayload = payload as ExactEvmPayload;
-  const networkId = getNetworkId(client.chain);
-
-  // verify version
-  const supportedVersion = await getVersion(client, networkId);
-  if (exactEvmPayload.version !== supportedVersion) {
-    return {
-      isValid: false,
-      invalidReason: "unsupported_version",
-      scheme: SCHEME,
-      network: networkId,
-    };
-  }
-
-  // verify usdc address is correct for the chain
-  const correctUsdcAddress = config[networkId].usdcAddress;
-  if (exactEvmPayload.token !== correctUsdcAddress) {
-    return {
-      isValid: false,
-      invalidReason: "incorrect_usdc_address",
-      scheme: SCHEME,
-      network: networkId,
-    };
-  }
+  const exactEvmPayload = payload.payload as ExactEvmPayload;
 
   // verify permit signature
-  let permitSignatureIsValid = false;
-  try {
-    const permitHash = await client.readContract({
-      address: exactEvmPayload.token,
-      abi,
-      functionName: "DOMAIN_SEPARATOR",
-    });
-
-    const types = authorizationTypes[exactEvmPayload.version];
-    const primaryType = Object.keys(types)[0];
-    const domain = {
-      name: await client.readContract({
-        address: exactEvmPayload.token,
-        abi,
-        functionName: "name",
-      }),
-      version: exactEvmPayload.version.toString(),
+  const permitTypedData = {
+    types: authorizationTypes,
+    primaryType: "TransferWithAuthorization" as const,
+    domain: {
+      name: "USD Coin",
+      version: "2",
       chainId: client.chain.id,
-      verifyingContract: exactEvmPayload.token,
-    };
+      verifyingContract: paymentRequirements.asset as Address,
+    },
+    message: {
+      from: exactEvmPayload.authorization.from,
+      to: exactEvmPayload.authorization.to,
+      value: exactEvmPayload.authorization.value,
+      validAfter: exactEvmPayload.authorization.validAfter,
+      validBefore: exactEvmPayload.authorization.validBefore,
+      nonce: exactEvmPayload.authorization.nonce,
+    },
+  };
 
-    const message = {
-      from: exactEvmPayload.from,
-      to: exactEvmPayload.to,
-      value: exactEvmPayload.value,
-      validAfter: exactEvmPayload.validAfter,
-      validBefore: exactEvmPayload.validBefore,
-      nonce: exactEvmPayload.nonce,
-    };
+  const recoveredAddress = await client.verifyTypedData({
+    address: exactEvmPayload.authorization.from as Address,
+    ...permitTypedData,
+    signature: exactEvmPayload.signature as Hex,
+  });
 
-    const signature = parseErc6492Signature(exactEvmPayload.signature);
-    const { success } = await client.verifyTypedData({
-      address: getAddress(exactEvmPayload.from),
-      domain,
-      types,
-      primaryType,
-      message,
-      signature: signature.signature,
-    });
-
-    permitSignatureIsValid = success;
-  } catch (error) {
-    permitSignatureIsValid = false;
-  }
-
-  if (!permitSignatureIsValid) {
+  if (!recoveredAddress) {
     return {
       isValid: false,
-      invalidReason: "invalid_permit_signature",
-      scheme: SCHEME,
-      network: networkId,
+      invalidReason: "invalid_exact_evm_payload_signature",
+      payer: exactEvmPayload.authorization.from,
     };
   }
 
-  // verify permit deadline is sufficiently in the future (at least 5 minutes from now)
-  const fiveMinutesFromNow = Math.floor(Date.now() / 1000) + 5 * 60;
-  if (exactEvmPayload.validBefore < fiveMinutesFromNow) {
+  if (
+    getAddress(exactEvmPayload.authorization.to) !==
+    getAddress(paymentRequirements.payTo)
+  ) {
     return {
       isValid: false,
-      invalidReason: "permit_deadline_too_soon",
-      scheme: SCHEME,
-      network: networkId,
+      invalidReason: "invalid_exact_evm_payload_recipient_mismatch",
+      payer: exactEvmPayload.authorization.from,
     };
   }
 
-  // verify client has sufficient usdc balance
-  const balance = await getERC20Balance(client, exactEvmPayload.from, exactEvmPayload.token);
-  if (balance < exactEvmPayload.value) {
+  if (
+    BigInt(exactEvmPayload.authorization.validBefore) <
+    BigInt(Math.floor(Date.now() / 1000) + 6)
+  ) {
     return {
       isValid: false,
-      invalidReason: "insufficient_balance",
-      scheme: SCHEME,
-      network: networkId,
+      invalidReason: "invalid_exact_evm_payload_authorization_valid_before",
+      payer: exactEvmPayload.authorization.from,
     };
   }
 
-  // verify payment amount meets required minimum
-  if (exactEvmPayload.value < paymentRequirements.amount) {
+  if (
+    BigInt(exactEvmPayload.authorization.validAfter) >
+    BigInt(Math.floor(Date.now() / 1000))
+  ) {
     return {
       isValid: false,
-      invalidReason: "insufficient_payment_amount",
-      scheme: SCHEME,
-      network: networkId,
+      invalidReason: "invalid_exact_evm_payload_authorization_valid_after",
+      payer: exactEvmPayload.authorization.from,
+    };
+  }
+
+  const balance = await getERC20Balance(
+    client,
+    paymentRequirements.asset as Address,
+    exactEvmPayload.authorization.from as Address
+  );
+  if (balance < BigInt(paymentRequirements.maxAmountRequired)) {
+    return {
+      isValid: false,
+      invalidReason: "insufficient_funds",
+      payer: exactEvmPayload.authorization.from,
+    };
+  }
+
+  if (
+    BigInt(exactEvmPayload.authorization.value) <
+    BigInt(paymentRequirements.maxAmountRequired)
+  ) {
+    return {
+      isValid: false,
+      invalidReason: "invalid_exact_evm_payload_authorization_value",
+      payer: exactEvmPayload.authorization.from,
     };
   }
 
   return {
     isValid: true,
-    scheme: SCHEME,
-    network: networkId,
+    invalidReason: undefined,
+    payer: exactEvmPayload.authorization.from,
   };
 }
 
@@ -188,61 +174,58 @@ export async function verify<
  * @param paymentRequirements - The payment requirements to validate against
  * @returns A SettleResponse indicating settlement success/failure with transaction details
  */
-export async function settle<
-  transport extends Transport,
-  chain extends Chain,
-  account extends Account,
->(
-  client: SignerWallet<transport, chain, account>,
+export async function settle<chain extends Chain, transport extends Transport>(
+  client: SignerWallet<chain, transport>,
   payload: PaymentPayload,
-  paymentRequirements: PaymentRequirements,
+  paymentRequirements: PaymentRequirements
 ): Promise<SettleResponse> {
-  const verifyResponse = await verify(client, payload, paymentRequirements);
-  if (!verifyResponse.isValid) {
+  const exactEvmPayload = payload.payload as ExactEvmPayload;
+
+  const valid = await verify(client, payload, paymentRequirements);
+
+  if (!valid.isValid) {
     return {
-      isSettled: false,
-      errorReason: verifyResponse.invalidReason,
-      scheme: SCHEME,
-      network: verifyResponse.network,
+      success: false,
+      network: payload.network,
+      transaction: "",
+      errorReason: valid.invalidReason ?? "invalid_scheme",
+      payer: exactEvmPayload.authorization.from,
     };
   }
 
-  const exactEvmPayload = payload as ExactEvmPayload;
-  const networkId = getNetworkId(client.chain);
+  const { signature } = parseErc6492Signature(exactEvmPayload.signature as Hex);
 
-  try {
-    const signature = parseErc6492Signature(exactEvmPayload.signature);
-    const hash = await client.writeContract({
-      address: exactEvmPayload.token,
-      abi,
-      functionName: "receiveWithAuthorization",
-      args: [
-        exactEvmPayload.from,
-        exactEvmPayload.to,
-        exactEvmPayload.value,
-        exactEvmPayload.validAfter,
-        exactEvmPayload.validBefore,
-        exactEvmPayload.nonce,
-        signature.signature,
-      ],
-    });
+  const tx = await client.writeContract({
+    address: paymentRequirements.asset as Address,
+    abi,
+    functionName: "transferWithAuthorization",
+    args: [
+      exactEvmPayload.authorization.from as Address,
+      exactEvmPayload.authorization.to as Address,
+      BigInt(exactEvmPayload.authorization.value),
+      BigInt(exactEvmPayload.authorization.validAfter),
+      BigInt(exactEvmPayload.authorization.validBefore),
+      exactEvmPayload.authorization.nonce as Hex,
+      signature,
+    ],
+  } as any);
 
-    // Wait for transaction confirmation
-    const receipt = await client.waitForTransactionReceipt({ hash });
+  const receipt = await client.waitForTransactionReceipt({ hash: tx });
 
+  if (receipt.status !== "success") {
     return {
-      isSettled: receipt.status === "success",
-      transactionHash: hash,
-      scheme: SCHEME,
-      network: networkId,
-      errorReason: receipt.status !== "success" ? "transaction_failed" : undefined,
-    };
-  } catch (error) {
-    return {
-      isSettled: false,
-      errorReason: "settlement_failed",
-      scheme: SCHEME,
-      network: networkId,
+      success: false,
+      errorReason: "invalid_transaction_state",
+      transaction: tx,
+      network: payload.network,
+      payer: exactEvmPayload.authorization.from,
     };
   }
+
+  return {
+    success: true,
+    transaction: tx,
+    network: payload.network,
+    payer: exactEvmPayload.authorization.from,
+  };
 }

@@ -4,13 +4,13 @@ import {
   PaymentRequirements,
   ExactSvmPayload,
   ErrorReasons,
-} from "../../../../types/verify";
-import { SupportedSVMNetworks } from "../../../../types/shared";
+} from "./src/types/payment";
+import { SupportedSVMNetworks } from "./src/types/network";
 import {
   Address,
   assertIsInstructionWithAccounts,
   assertIsInstructionWithData,
-  CompilableTransactionMessage,
+  compileTransactionMessage,
   decompileTransactionMessageFetchingLookupTables,
   fetchEncodedAccounts,
   getCompiledTransactionMessageDecoder,
@@ -47,8 +47,9 @@ import {
   decodeTransactionFromPayload,
   getRpcClient,
   signAndSimulateTransaction,
-} from "../../../../shared/svm";
-import { SCHEME } from "../../";
+} from "./src/shared/svm-utils";
+
+const SCHEME = "exact";
 
 /**
  * Verify the payment payload against the payment requirements.
@@ -61,7 +62,7 @@ import { SCHEME } from "../../";
 export async function verify(
   signer: KeyPairSigner,
   payload: PaymentPayload,
-  paymentRequirements: PaymentRequirements,
+  paymentRequirements: PaymentRequirements
 ): Promise<VerifyResponse> {
   try {
     // verify that the scheme and network are supported
@@ -73,12 +74,18 @@ export async function verify(
     const rpc = getRpcClient(payload.network);
 
     // perform transaction introspection to validate the transaction structure and details
-    await transactionIntrospection(svmPayload, paymentRequirements, rpc);
+    await transactionIntrospection(svmPayload, paymentRequirements, rpc as any);
 
     // simulate the transaction to ensure it will execute successfully
-    const simulateResult = await signAndSimulateTransaction(signer, decodedTransaction, rpc);
+    const simulateResult = await signAndSimulateTransaction(
+      signer,
+      decodedTransaction,
+      rpc
+    );
     if (simulateResult.value?.err) {
-      throw new Error(`invalid_exact_svm_payload_transaction_simulation_failed`);
+      throw new Error(
+        `invalid_exact_svm_payload_transaction_simulation_failed`
+      );
     }
 
     return {
@@ -88,7 +95,9 @@ export async function verify(
   } catch (error) {
     // if the error is one of the known error reasons, return the error reason
     if (error instanceof Error) {
-      if (ErrorReasons.includes(error.message as (typeof ErrorReasons)[number])) {
+      if (
+        ErrorReasons.includes(error.message as (typeof ErrorReasons)[number])
+      ) {
         return {
           isValid: false,
           invalidReason: error.message as (typeof ErrorReasons)[number],
@@ -113,7 +122,7 @@ export async function verify(
  */
 export function verifySchemesAndNetworks(
   payload: PaymentPayload,
-  paymentRequirements: PaymentRequirements,
+  paymentRequirements: PaymentRequirements
 ): void {
   if (payload.scheme !== SCHEME || paymentRequirements.scheme !== SCHEME) {
     throw new Error("unsupported_scheme");
@@ -121,7 +130,7 @@ export function verifySchemesAndNetworks(
 
   if (
     payload.network !== paymentRequirements.network ||
-    !SupportedSVMNetworks.includes(paymentRequirements.network)
+    !SupportedSVMNetworks.includes(paymentRequirements.network as any)
   ) {
     throw new Error("invalid_network");
   }
@@ -139,16 +148,18 @@ export function verifySchemesAndNetworks(
 export async function transactionIntrospection(
   svmPayload: ExactSvmPayload,
   paymentRequirements: PaymentRequirements,
-  rpc: RpcDevnet<SolanaRpcApiDevnet> | RpcMainnet<SolanaRpcApiMainnet>,
+  rpc: RpcDevnet<SolanaRpcApiDevnet> | RpcMainnet<SolanaRpcApiMainnet>
 ): Promise<void> {
   const decodedTransaction = decodeTransactionFromPayload(svmPayload);
-  const compiledTransactionMessage = getCompiledTransactionMessageDecoder().decode(
-    decodedTransaction.messageBytes,
-  );
-  const transactionMessage = await decompileTransactionMessageFetchingLookupTables(
-    compiledTransactionMessage,
-    rpc,
-  );
+  const compiledTransactionMessage =
+    getCompiledTransactionMessageDecoder().decode(
+      decodedTransaction.messageBytes
+    );
+  const transactionMessage =
+    await decompileTransactionMessageFetchingLookupTables(
+      compiledTransactionMessage,
+      rpc
+    );
 
   // verify that the transaction contains the expected instructions
   await verifyTransactionInstructions(transactionMessage, paymentRequirements);
@@ -162,15 +173,17 @@ export async function transactionIntrospection(
  * @throws Error if the transaction does not contain the expected instructions
  */
 export async function verifyTransactionInstructions(
-  transactionMessage: CompilableTransactionMessage,
-  paymentRequirements: PaymentRequirements,
+  transactionMessage: any,
+  paymentRequirements: PaymentRequirements
 ) {
   // validate the number of expected instructions
   if (
     transactionMessage.instructions.length !== 3 &&
     transactionMessage.instructions.length !== 4
   ) {
-    throw new Error(`invalid_exact_svm_payload_transaction_instructions_length`);
+    throw new Error(
+      `invalid_exact_svm_payload_transaction_instructions_length`
+    );
   }
 
   // verify that the compute limit and price instructions are valid
@@ -180,18 +193,29 @@ export async function verifyTransactionInstructions(
   // verify that the transfer instruction is valid
   // this expects the destination ATA to already exist
   if (transactionMessage.instructions.length === 3) {
-    await verifyTransferInstruction(transactionMessage.instructions[2], paymentRequirements, {
-      txHasCreateDestATAInstruction: false,
-    });
+    await verifyTransferInstruction(
+      transactionMessage.instructions[2],
+      paymentRequirements,
+      {
+        txHasCreateDestATAInstruction: false,
+      }
+    );
   }
 
   // verify that the transfer instruction is valid
   // this expects the destination ATA to be created in the same transaction
   else {
-    verifyCreateATAInstruction(transactionMessage.instructions[2], paymentRequirements);
-    verifyTransferInstruction(transactionMessage.instructions[3], paymentRequirements, {
-      txHasCreateDestATAInstruction: true,
-    });
+    verifyCreateATAInstruction(
+      transactionMessage.instructions[2],
+      paymentRequirements
+    );
+    verifyTransferInstruction(
+      transactionMessage.instructions[3],
+      paymentRequirements,
+      {
+        txHasCreateDestATAInstruction: true,
+      }
+    );
   }
 }
 
@@ -205,23 +229,26 @@ export function verifyComputeLimitInstruction(
   instruction: Instruction<
     string,
     readonly (AccountLookupMeta<string, string> | AccountMeta<string>)[]
-  >,
+  >
 ) {
   try {
     if (
-      instruction.programAddress.toString() !== COMPUTE_BUDGET_PROGRAM_ADDRESS.toString() ||
+      instruction.programAddress.toString() !==
+        COMPUTE_BUDGET_PROGRAM_ADDRESS.toString() ||
       instruction.data?.[0] !== 2 // discriminator of set compute unit limit instruction
     ) {
       throw new Error(
-        `invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction`,
+        `invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction`
       );
     }
     parseSetComputeUnitLimitInstruction(
-      instruction as InstructionWithData<Uint8Array<ArrayBufferLike>>,
+      instruction as InstructionWithData<Uint8Array<ArrayBufferLike>>
     );
   } catch (error) {
     console.error(error);
-    throw new Error(`invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction`);
+    throw new Error(
+      `invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction`
+    );
   }
 }
 
@@ -237,22 +264,25 @@ export function verifyComputePriceInstruction(
   instruction: Instruction<
     string,
     readonly (AccountLookupMeta<string, string> | AccountMeta<string>)[]
-  >,
+  >
 ) {
   if (
-    instruction.programAddress.toString() !== COMPUTE_BUDGET_PROGRAM_ADDRESS.toString() ||
+    instruction.programAddress.toString() !==
+      COMPUTE_BUDGET_PROGRAM_ADDRESS.toString() ||
     instruction.data?.[0] !== 3 // discriminator of set compute unit price instruction
   ) {
-    throw new Error(`invalid_exact_svm_payload_transaction_instructions_compute_price_instruction`);
+    throw new Error(
+      `invalid_exact_svm_payload_transaction_instructions_compute_price_instruction`
+    );
   }
   const parsedInstruction = parseSetComputeUnitPriceInstruction(
-    instruction as InstructionWithData<Uint8Array<ArrayBufferLike>>,
+    instruction as InstructionWithData<Uint8Array<ArrayBufferLike>>
   );
 
   // TODO: allow the facilitator to pass in an optional max compute unit price
   if (parsedInstruction.data.microLamports > 5 * 1_000_000) {
     throw new Error(
-      `invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high`,
+      `invalid_exact_svm_payload_transaction_instructions_compute_price_instruction_too_high`
     );
   }
 }
@@ -269,9 +299,11 @@ export function verifyCreateATAInstruction(
     string,
     readonly (AccountLookupMeta<string, string> | AccountMeta<string>)[]
   >,
-  paymentRequirements: PaymentRequirements,
+  paymentRequirements: PaymentRequirements
 ) {
-  let createATAInstruction: ReturnType<typeof parseCreateAssociatedTokenInstruction>;
+  let createATAInstruction: ReturnType<
+    typeof parseCreateAssociatedTokenInstruction
+  >;
 
   // validate and refine the type of the create ATA instruction
   try {
@@ -285,17 +317,27 @@ export function verifyCreateATAInstruction(
     });
   } catch (error) {
     console.error(error);
-    throw new Error(`invalid_exact_svm_payload_transaction_create_ata_instruction`);
+    throw new Error(
+      `invalid_exact_svm_payload_transaction_create_ata_instruction`
+    );
   }
 
   // verify that the ATA is created for the expected payee
-  if (createATAInstruction.accounts.owner.address !== paymentRequirements.payTo) {
-    throw new Error(`invalid_exact_svm_payload_transaction_create_ata_instruction_incorrect_payee`);
+  if (
+    createATAInstruction.accounts.owner.address !== paymentRequirements.payTo
+  ) {
+    throw new Error(
+      `invalid_exact_svm_payload_transaction_create_ata_instruction_incorrect_payee`
+    );
   }
 
   // verify that the ATA is created for the expected asset
-  if (createATAInstruction.accounts.mint.address !== paymentRequirements.asset) {
-    throw new Error(`invalid_exact_svm_payload_transaction_create_ata_instruction_incorrect_asset`);
+  if (
+    createATAInstruction.accounts.mint.address !== paymentRequirements.asset
+  ) {
+    throw new Error(
+      `invalid_exact_svm_payload_transaction_create_ata_instruction_incorrect_asset`
+    );
   }
 }
 
@@ -314,13 +356,17 @@ export async function verifyTransferInstruction(
     readonly (AccountLookupMeta<string, string> | AccountMeta<string>)[]
   >,
   paymentRequirements: PaymentRequirements,
-  { txHasCreateDestATAInstruction }: { txHasCreateDestATAInstruction: boolean },
+  { txHasCreateDestATAInstruction }: { txHasCreateDestATAInstruction: boolean }
 ) {
   // get a validated and parsed transferChecked instruction
   const tokenInstruction = getValidatedTransferCheckedInstruction(instruction);
-  await verifyTransferCheckedInstruction(tokenInstruction, paymentRequirements, {
-    txHasCreateDestATAInstruction,
-  });
+  await verifyTransferCheckedInstruction(
+    tokenInstruction,
+    paymentRequirements,
+    {
+      txHasCreateDestATAInstruction,
+    }
+  );
 }
 
 /**
@@ -335,11 +381,12 @@ export async function verifyTransferInstruction(
 export async function verifyTransferCheckedInstruction(
   parsedInstruction: ReturnType<typeof parseTransferCheckedInstruction2022>,
   paymentRequirements: PaymentRequirements,
-  { txHasCreateDestATAInstruction }: { txHasCreateDestATAInstruction: boolean },
+  { txHasCreateDestATAInstruction }: { txHasCreateDestATAInstruction: boolean }
 ) {
   // get the token program address
   const tokenProgramAddress =
-    parsedInstruction.programAddress.toString() === TOKEN_PROGRAM_ADDRESS.toString()
+    parsedInstruction.programAddress.toString() ===
+    TOKEN_PROGRAM_ADDRESS.toString()
       ? TOKEN_PROGRAM_ADDRESS
       : TOKEN_2022_PROGRAM_ADDRESS;
 
@@ -352,26 +399,37 @@ export async function verifyTransferCheckedInstruction(
 
   // verify that the transfer is to the expected ATA
   if (parsedInstruction.accounts.destination.address !== payToATA[0]) {
-    throw new Error(`invalid_exact_svm_payload_transaction_transfer_to_incorrect_ata`);
+    throw new Error(
+      `invalid_exact_svm_payload_transaction_transfer_to_incorrect_ata`
+    );
   }
 
   // verify that the source and destination ATAs exist
   const addresses = [parsedInstruction.accounts.source.address, payToATA[0]];
-  const rpc = getRpcClient(paymentRequirements.network);
-  const maybeAccounts = await fetchEncodedAccounts(rpc, addresses);
-  const missingAccounts = maybeAccounts.filter(a => !a.exists);
+  const rpc = getRpcClient(paymentRequirements.network as any);
+  const maybeAccounts = await fetchEncodedAccounts(rpc as any, addresses);
+  const missingAccounts = maybeAccounts.filter((a) => !a.exists);
   for (const missingAccount of missingAccounts) {
     if (missingAccount.address === parsedInstruction.accounts.source.address) {
-      throw new Error(`invalid_exact_svm_payload_transaction_sender_ata_not_found`);
+      throw new Error(
+        `invalid_exact_svm_payload_transaction_sender_ata_not_found`
+      );
     }
-    if (missingAccount.address === payToATA[0] && !txHasCreateDestATAInstruction) {
-      throw new Error(`invalid_exact_svm_payload_transaction_receiver_ata_not_found`);
+    if (
+      missingAccount.address === payToATA[0] &&
+      !txHasCreateDestATAInstruction
+    ) {
+      throw new Error(
+        `invalid_exact_svm_payload_transaction_receiver_ata_not_found`
+      );
     }
   }
 
   // verify that the amount is correct
   const instructionAmount = parsedInstruction.data.amount;
-  const paymentRequirementsAmount = BigInt(paymentRequirements.maxAmountRequired);
+  const paymentRequirementsAmount = BigInt(
+    paymentRequirements.maxAmountRequired
+  );
   if (instructionAmount !== paymentRequirementsAmount) {
     throw new Error(`invalid_exact_svm_payload_transaction_amount_mismatch`);
   }
@@ -389,7 +447,7 @@ export function getValidatedTransferCheckedInstruction(
   instruction: Instruction<
     string,
     readonly (AccountLookupMeta<string, string> | AccountMeta<string>)[]
-  >,
+  >
 ) {
   try {
     assertIsInstructionWithData(instruction);
@@ -402,11 +460,13 @@ export function getValidatedTransferCheckedInstruction(
   let tokenInstruction;
 
   // spl-token program
-  if (instruction.programAddress.toString() === TOKEN_PROGRAM_ADDRESS.toString()) {
+  if (
+    instruction.programAddress.toString() === TOKEN_PROGRAM_ADDRESS.toString()
+  ) {
     const identifiedInstruction = identifyTokenInstruction(instruction);
     if (identifiedInstruction !== TokenInstruction.TransferChecked) {
       throw new Error(
-        `invalid_exact_svm_payload_transaction_instruction_not_spl_token_transfer_checked`,
+        `invalid_exact_svm_payload_transaction_instruction_not_spl_token_transfer_checked`
       );
     }
     tokenInstruction = parseTransferCheckedInstructionToken({
@@ -415,11 +475,14 @@ export function getValidatedTransferCheckedInstruction(
     });
   }
   // token-2022 program
-  else if (instruction.programAddress.toString() === TOKEN_2022_PROGRAM_ADDRESS.toString()) {
+  else if (
+    instruction.programAddress.toString() ===
+    TOKEN_2022_PROGRAM_ADDRESS.toString()
+  ) {
     const identifiedInstruction = identifyToken2022Instruction(instruction);
     if (identifiedInstruction !== Token2022Instruction.TransferChecked) {
       throw new Error(
-        `invalid_exact_svm_payload_transaction_instruction_not_token_2022_transfer_checked`,
+        `invalid_exact_svm_payload_transaction_instruction_not_token_2022_transfer_checked`
       );
     }
     tokenInstruction = parseTransferCheckedInstruction2022({
@@ -429,7 +492,9 @@ export function getValidatedTransferCheckedInstruction(
   }
   // invalid instruction
   else {
-    throw new Error(`invalid_exact_svm_payload_transaction_not_a_transfer_instruction`);
+    throw new Error(
+      `invalid_exact_svm_payload_transaction_not_a_transfer_instruction`
+    );
   }
 
   return tokenInstruction;

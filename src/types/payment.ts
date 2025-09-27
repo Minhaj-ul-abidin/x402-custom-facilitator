@@ -23,6 +23,8 @@ export const ErrorReasons = [
   "unsupported_scheme",
   "unexpected_settle_error",
   "unexpected_verify_error",
+  "settle_exact_svm_block_height_exceeded",
+  "settle_exact_svm_transaction_confirmation_timed_out",
 ] as const;
 
 export const ExactEvmPayloadAuthorizationSchema = z.object({
