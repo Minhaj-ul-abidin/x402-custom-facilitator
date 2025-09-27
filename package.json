@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node dist/index.js",
     "dev": "tsx index.ts",
-    "dev:watch": "nodemon --exec tsx index.ts --watch . --ext ts,js,json --ignore dist/ --ignore node_modules/",
+    "dev:watch": "nodemon",
     "dev:build": "concurrently \"npm run build:watch\" \"npm run dev\"",
     "build": "tsc",
     "build:watch": "tsc --watch",
@@ -32,13 +32,17 @@
     "@solana-program/token-2022": "^0.5.0",
     "@solana/kit": "^3.0.3",
     "@solana/transaction-confirmation": "^3.0.3",
+    "@types/morgan": "^1.9.10",
     "@types/swagger-jsdoc": "^6.0.4",
     "@types/swagger-ui-express": "^4.1.8",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "morgan": "^1.10.1",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "viem": "^2.21.26",
+    "winston": "^3.17.0",
+    "winston-daily-rotate-file": "^5.0.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {

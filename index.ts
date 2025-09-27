@@ -1,7 +1,13 @@
 import { config } from "dotenv";
 import express, { Request, Response } from "express";
+import morgan from "morgan";
 import swaggerUi from "swagger-ui-express";
 import swaggerJsdoc from "swagger-jsdoc";
+import logger, {
+  morganStream,
+  paymentLogger,
+  systemLogger,
+} from "./src/utils/logger";
 import { verify, settle } from "./src/facilitator";
 import {
   PaymentRequirementsSchema,
@@ -218,6 +224,19 @@ const swaggerOptions = {
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
 
 const app = express();
+
+// Request logging middleware
+app.use(
+  morgan("combined", {
+    stream: morganStream,
+    skip: (req, res) => {
+      // Skip logging for Swagger UI assets to reduce noise
+      return req.url.startsWith("/api-docs") && req.url !== "/api-docs";
+    },
+  })
+);
+
+// Body parsing middleware
 app.use(express.json());
 
 // Swagger UI
@@ -253,6 +272,7 @@ type SettleRequest = {
  *                   example: "ok"
  */
 app.get("/health", (req: Request, res: Response) => {
+  systemLogger.health();
   res.json({ status: "ok" });
 });
 
@@ -319,6 +339,15 @@ app.get("/verify", (req: Request, res: Response) => {
  *               $ref: '#/components/schemas/ErrorResponse'
  */
 app.post("/verify", async (req: Request, res: Response) => {
+  const startTime = Date.now();
+  const requestId = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+  paymentLogger.verify.start(
+    req.body.paymentRequirements?.network || "unknown",
+    req.body.paymentRequirements?.scheme || "unknown",
+    requestId
+  );
+
   try {
     const body: VerifyRequest = req.body;
     const paymentRequirements = PaymentRequirementsSchema.parse(
@@ -328,10 +357,12 @@ app.post("/verify", async (req: Request, res: Response) => {
 
     let client;
     if (SupportedEVMNetworks.includes(paymentRequirements.network as any)) {
+      paymentLogger.client.evm(paymentRequirements.network, "create");
       client = createConnectedClient(paymentRequirements.network);
     } else if (
       SupportedSVMNetworks.includes(paymentRequirements.network as any)
     ) {
+      paymentLogger.client.svm(paymentRequirements.network, "create");
       if (!SVM_PRIVATE_KEY) {
         throw new Error("SVM_PRIVATE_KEY required for Solana");
       }
@@ -341,8 +372,22 @@ app.post("/verify", async (req: Request, res: Response) => {
     }
 
     const result = await verify(client, paymentPayload, paymentRequirements);
+    const duration = Date.now() - startTime;
+    paymentLogger.verify.success(
+      paymentRequirements.network,
+      duration,
+      result.isValid,
+      requestId
+    );
     res.json(result);
   } catch (error) {
+    const duration = Date.now() - startTime;
+    paymentLogger.verify.error(
+      req.body.paymentRequirements?.network || "unknown",
+      error,
+      duration,
+      requestId
+    );
     res.status(400).json({ error: "Invalid request" });
   }
 });
@@ -377,6 +422,7 @@ app.get("/settle", (req: Request, res: Response) => {
 });
 
 app.get("/supported", async (req: Request, res: Response) => {
+  systemLogger.supported();
   const kinds = [];
 
   if (EVM_PRIVATE_KEY) {
@@ -403,6 +449,15 @@ app.get("/supported", async (req: Request, res: Response) => {
 });
 
 app.post("/settle", async (req: Request, res: Response) => {
+  const startTime = Date.now();
+  const requestId = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+  paymentLogger.settle.start(
+    req.body.paymentRequirements?.network || "unknown",
+    req.body.paymentRequirements?.scheme || "unknown",
+    requestId
+  );
+
   try {
     const body: SettleRequest = req.body;
     const paymentRequirements = PaymentRequirementsSchema.parse(
@@ -412,6 +467,7 @@ app.post("/settle", async (req: Request, res: Response) => {
 
     let signer;
     if (SupportedEVMNetworks.includes(paymentRequirements.network as any)) {
+      paymentLogger.client.evm(paymentRequirements.network, "create_signer");
       if (!EVM_PRIVATE_KEY) {
         throw new Error("EVM_PRIVATE_KEY required");
       }
@@ -422,6 +478,7 @@ app.post("/settle", async (req: Request, res: Response) => {
     } else if (
       SupportedSVMNetworks.includes(paymentRequirements.network as any)
     ) {
+      paymentLogger.client.svm(paymentRequirements.network, "create_signer");
       if (!SVM_PRIVATE_KEY) {
         throw new Error("SVM_PRIVATE_KEY required");
       }
@@ -431,13 +488,28 @@ app.post("/settle", async (req: Request, res: Response) => {
     }
 
     const result = await settle(signer, paymentPayload, paymentRequirements);
+    const duration = Date.now() - startTime;
+    paymentLogger.settle.success(
+      paymentRequirements.network,
+      duration,
+      result.success,
+      result.transaction,
+      requestId
+    );
     res.json(result);
   } catch (error) {
+    const duration = Date.now() - startTime;
+    paymentLogger.settle.error(
+      req.body.paymentRequirements?.network || "unknown",
+      error,
+      duration,
+      requestId
+    );
     res.status(400).json({ error: "Invalid request" });
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT || "3000");
 app.listen(PORT, () => {
-  console.log(`x402 Facilitator Server running on http://localhost:${PORT}`);
+  systemLogger.startup(PORT);
 });

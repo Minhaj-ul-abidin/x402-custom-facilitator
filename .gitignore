@@ -6,6 +6,12 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Winston logs
+logs/
+logs/combined-*.log
+logs/error-*.log
+logs/http-*.log
+
 # Build outputs
 dist/
 build/
