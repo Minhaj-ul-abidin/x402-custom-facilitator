@@ -19,26 +19,23 @@ import { KeyPairSigner } from "@solana/kit";
 /**
  * Verifies a payment payload against the required payment details
  */
-export async function verify<
-  transport extends Transport,
-  chain extends Chain,
-  account extends Account | undefined,
->(
-  client: ConnectedClient | Signer,
+export async function verify(
+  client: any,
   payload: PaymentPayload,
   paymentRequirements: PaymentRequirements,
 ): Promise<VerifyResponse> {
   if (paymentRequirements.scheme === "exact") {
     if (SupportedEVMNetworks.includes(paymentRequirements.network as Network)) {
       return verifyExactEvm(
-        client as EvmConnectedClient<transport, chain, account>,
+        client as any,
         payload,
         paymentRequirements,
       );
     }
 
     if (SupportedSVMNetworks.includes(paymentRequirements.network as Network)) {
-      return await verifyExactSvm(client as KeyPairSigner, payload, paymentRequirements);
+      const svmSigner = await (client as any);
+      return await verifyExactSvm(svmSigner, payload, paymentRequirements);
     }
   }
 
@@ -54,22 +51,23 @@ export async function verify<
 /**
  * Settles a payment payload
  */
-export async function settle<transport extends Transport, chain extends Chain>(
-  client: Signer,
+export async function settle(
+  client: any,
   payload: PaymentPayload,
   paymentRequirements: PaymentRequirements,
 ): Promise<SettleResponse> {
   if (paymentRequirements.scheme === "exact") {
     if (SupportedEVMNetworks.includes(paymentRequirements.network as Network)) {
       return await settleExactEvm(
-        client as EvmSignerWallet<chain, transport>,
+        client as any,
         payload,
         paymentRequirements,
       );
     }
 
     if (SupportedSVMNetworks.includes(paymentRequirements.network as Network)) {
-      return await settleExactSvm(client as KeyPairSigner, payload, paymentRequirements);
+      const svmSigner = await (client as any);
+      return await settleExactSvm(svmSigner, payload, paymentRequirements);
     }
   }
 

@@ -13,8 +13,10 @@ import type { PaymentPayload, PaymentRequirements } from "./src/types/payment";
 
 config();
 
-// Configure Alchemy API key
-process.env.ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY || "Sk1k_Z9AztMyclIQHflPimsT62pi6C6T";
+// Configure Alchemy API key from environment
+if (!process.env.ALCHEMY_API_KEY) {
+  console.warn("ALCHEMY_API_KEY not set - using default RPC endpoints");
+}
 
 const EVM_PRIVATE_KEY = process.env.FACILITATOR_PRIVATE_KEY || process.env.EVM_PRIVATE_KEY || "";
 const SVM_PRIVATE_KEY = process.env.SVM_PRIVATE_KEY || "";

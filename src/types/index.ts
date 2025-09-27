@@ -12,6 +12,5 @@ export {
 } from "./svm";
 export * from "./wallet";
 
-// Re-export the main functions with unique names
-export { createEvmConnectedClient as createConnectedClient };
-export { createEvmSigner as createSigner };
+// Re-export the main functions
+export { createConnectedClient, createSigner } from "./wallet";

@@ -8,6 +8,7 @@ export function createSvmSigner(network: string, privateKey: string): Promise<Ke
     address: { toString: () => "mock_svm_address" } as any,
     keyPair: {} as any,
     signMessages: async () => ({} as any),
+    signTransactions: async () => ({} as any),
   };
   return Promise.resolve(mockSigner);
 }
